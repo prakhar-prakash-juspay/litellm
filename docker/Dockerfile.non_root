@@ -1,6 +1,6 @@
-# Base images
-ARG LITELLM_BUILD_IMAGE=cgr.dev/chainguard/python:latest-dev
-ARG LITELLM_RUNTIME_IMAGE=cgr.dev/chainguard/python:latest-dev
+# Base images - Use Python 3.13 for package compatibility (ddtrace has no wheels for 3.14)
+ARG LITELLM_BUILD_IMAGE=python:3.13-slim
+ARG LITELLM_RUNTIME_IMAGE=python:3.13-slim
 
 # -----------------
 # Builder Stage
@@ -9,8 +9,10 @@ FROM $LITELLM_BUILD_IMAGE AS builder
 WORKDIR /app
 
 # Install build dependencies
-USER root
-RUN apk add --no-cache build-base bash \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    bash \
+  && rm -rf /var/lib/apt/lists/* \
   && pip install --no-cache-dir --upgrade pip build
 
 # Copy project files
@@ -30,10 +32,16 @@ RUN rm -rf dist/* && python -m build && \
 FROM $LITELLM_RUNTIME_IMAGE AS runtime
 WORKDIR /app
 
-# Install runtime dependencies
-USER root
-RUN apk upgrade --no-cache && \
-  apk add --no-cache bash libstdc++ ca-certificates openssl supervisor
+# Install runtime dependencies and create non-root user
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash \
+    ca-certificates \
+    openssl \
+    supervisor \
+    libatomic1 \
+  && rm -rf /var/lib/apt/lists/* \
+  && groupadd -r -g 65534 nogroup 2>/dev/null || true \
+  && useradd -r -u 65534 -g nogroup -s /sbin/nologin nobody 2>/dev/null || true
 
 # Copy only necessary artifacts from builder stage for runtime
 COPY . .
