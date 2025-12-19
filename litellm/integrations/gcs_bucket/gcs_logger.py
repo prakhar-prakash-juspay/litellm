@@ -1,61 +1,41 @@
 """
 Production Logger with GCS Support for LiteLLM Proxy Server
-Logs to local files and separate GCS buckets for success/error events
+Logs to separate GCS buckets for success/error events with custom folder structures
 """
 
 from litellm.integrations.custom_logger import CustomLogger
+from litellm.integrations.gcs_bucket.gcs_bucket_base import GCSBucketBase
+from litellm._logging import verbose_logger
 import litellm
 import json
 import time
 import uuid
 import os
 from datetime import datetime
+from typing import Optional
+from urllib.parse import quote
 
 
 class ProductionGCSLogger(CustomLogger):
-    """Production logger with local file and GCS bucket support"""
+    """Production logger with async GCS bucket support using custom folder structures"""
 
     def __init__(self):
         super().__init__()
-        self.gcs_client = None
-        self.success_bucket = None
-        self.error_bucket = None
-        self._initialize_gcs()
+        self.success_bucket_name = os.getenv("GCS_SUCCESS_BUCKET_NAME")
+        self.error_bucket_name = os.getenv("GCS_ERROR_BUCKET_NAME")
+        self.service_account_path = os.getenv("GCS_PATH_SERVICE_ACCOUNT")
+        
+        # Initialize GCS base for async operations
+        self.gcs_base = GCSBucketBase(bucket_name=self.success_bucket_name)
+        
+        if not self.success_bucket_name or not self.error_bucket_name:
+            verbose_logger.warning("⚠️  GCS bucket names not set. GCS logging disabled.")
+        else:
+            verbose_logger.info(f"✅ GCS initialized: {self.success_bucket_name}, {self.error_bucket_name}")
 
-    def _initialize_gcs(self):
-        """Initialize GCS client and buckets"""
-        try:
-            from google.cloud import storage
-
-            success_bucket_name = os.getenv("GCS_SUCCESS_BUCKET_NAME")
-            error_bucket_name = os.getenv("GCS_ERROR_BUCKET_NAME")
-            service_account_path = os.getenv("GCS_PATH_SERVICE_ACCOUNT")
-
-            if not success_bucket_name or not error_bucket_name:
-                print("⚠️  GCS bucket names not set. GCS logging disabled.")
-                return
-
-            if service_account_path and os.path.exists(service_account_path):
-                self.gcs_client = storage.Client.from_service_account_json(
-                    service_account_path
-                )
-            else:
-                self.gcs_client = storage.Client()
-
-            self.success_bucket = self.gcs_client.bucket(success_bucket_name)
-            self.error_bucket = self.gcs_client.bucket(error_bucket_name)
-            print(f"✅ GCS initialized: {success_bucket_name}, {error_bucket_name}")
-
-        except ImportError:
-            print("⚠️  google-cloud-storage not installed")
-            self.gcs_client = None
-        except Exception as e:
-            print(f"❌ GCS initialization error: {e}")
-            self.gcs_client = None
-
-    def _upload_to_gcs(self, data: dict, bucket, log_type: str):
-        """Upload log data to GCS bucket"""
-        if not self.gcs_client or not bucket:
+    async def _upload_to_gcs_async(self, data: dict, bucket_name: str, log_type: str):
+        """Upload log data to GCS bucket using async I/O"""
+        if not bucket_name:
             return
 
         try:
@@ -92,13 +72,24 @@ class ProductionGCSLogger(CustomLogger):
                 filename = f"{date}_{correlation_id}.json"
                 gcs_path = f"{model_name}/{filename}"
 
-            blob = bucket.blob(gcs_path)
-            blob.upload_from_string(
-                json.dumps(data, indent=2, default=str), content_type="application/json"
+            # Use async httpx to upload to GCS
+            headers = await self.gcs_base.construct_request_headers(
+                service_account_json=self.service_account_path,
+                vertex_instance=None
+            )
+            
+            # Upload using the GCS REST API
+            json_data = json.dumps(data, indent=2, default=str)
+            await self.gcs_base._log_json_data_on_gcs(
+                headers=headers,
+                bucket_name=bucket_name,
+                object_name=gcs_path,
+                logging_payload=json_data
             )
 
         except Exception as e:
-            print(f"❌ GCS upload error: {e}")
+            verbose_logger.exception(f"❌ GCS upload error: {e}")
+
 
     def log_pre_api_call(self, model, messages, kwargs):
         pass
@@ -200,13 +191,11 @@ class ProductionGCSLogger(CustomLogger):
             except Exception:
                 success_log["cost"] = 0
 
-            self._upload_to_gcs(success_log, self.success_bucket, "success")
+            if self.success_bucket_name:
+                await self._upload_to_gcs_async(success_log, self.success_bucket_name, "success")
 
         except Exception as e:
-            print(f"Error logging success: {e}")
-            import traceback
-
-            traceback.print_exc()
+            verbose_logger.exception(f"Error logging success: {e}")
 
     async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
         """Log failed requests for debugging"""
@@ -263,13 +252,11 @@ class ProductionGCSLogger(CustomLogger):
                 },
             }
 
-            self._upload_to_gcs(error_log, self.error_bucket, "error")
+            if self.error_bucket_name:
+                await self._upload_to_gcs_async(error_log, self.error_bucket_name, "error")
 
         except Exception as e:
-            print(f"Error logging failure: {e}")
-            import traceback
-
-            traceback.print_exc()
+            verbose_logger.exception(f"Error logging failure: {e}")
 
 
 # Handler instance
