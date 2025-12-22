@@ -39,7 +39,7 @@ class ProductionGCSLogger(CustomLogger):
             return
 
         try:
-            date = datetime.utcnow().strftime("%Y-%m-%d")
+            date = datetime.utcnow().strftime("%Y-%m-%d_%H-%M-%S")
             correlation_id = data.get("correlation_id", str(uuid.uuid4()))
 
             if log_type == "success":
