@@ -39,7 +39,8 @@ class ProductionGCSLogger(CustomLogger):
             return
 
         try:
-            date = datetime.utcnow().strftime("%Y-%m-%d_%H-%M-%S")
+            timestamp = datetime.utcnow().strftime("%H-%M-%S")
+            date = datetime.utcnow().strftime("%Y-%m-%d")
             correlation_id = data.get("correlation_id", str(uuid.uuid4()))
 
             if log_type == "success":
@@ -55,8 +56,8 @@ class ProductionGCSLogger(CustomLogger):
                 team = team.replace("/", "_").replace(" ", "_")
                 username = username.replace("/", "_").replace(" ", "_")
 
-                filename = f"{date}_{correlation_id}.json"
-                gcs_path = f"{department}/{team}/{username}/{filename}"
+                filename = f"{date}_{timestamp}_{correlation_id}.json"
+                gcs_path = f"success/{department}/{team}/{username}/{filename}"
             else:
                 # Error logs: model/{date}_{correlation_id}.json
                 model_data = data.get("model", {})
@@ -69,8 +70,8 @@ class ProductionGCSLogger(CustomLogger):
                 # Sanitize model name
                 model_name = model_name.replace("/", "_").replace(" ", "_")
 
-                filename = f"{date}_{correlation_id}.json"
-                gcs_path = f"{model_name}/{filename}"
+                filename = f"{timestamp}_{correlation_id}.json"
+                gcs_path = f"failure/{model_name}/{date}/{filename}"
 
             # Use async httpx to upload to GCS
             headers = await self.gcs_base.construct_request_headers(
@@ -200,7 +201,7 @@ class ProductionGCSLogger(CustomLogger):
     async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
         """Log failed requests for debugging"""
         try:
-            correlation_id = str(uuid.uuid4())
+            correlation_id = getattr(response_obj, "id", None) or str(uuid.uuid4())
             litellm_params = kwargs.get("litellm_params", {})
             metadata = litellm_params.get("metadata", {})
 
