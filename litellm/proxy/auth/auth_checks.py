@@ -196,7 +196,7 @@ async def common_checks(
 
         # Get the actual litellm model name (with hosted_vllm/ prefix) for free model check
         actual_model = get_deployment_litellm_model_name(model=_model, llm_router=llm_router)
-
+        verbose_proxy_logger.debug(f"[Model Resolution] Original: {_model}, Resolved: {actual_model}")
 
         is_free_model = False
         if actual_model is not None:
@@ -2014,6 +2014,7 @@ async def _virtual_key_max_budget_check(
     if model:
         # Get the actual litellm model name (with hosted_vllm/ prefix) for free model check
         actual_model = get_deployment_litellm_model_name(model=model, llm_router=llm_router)
+        verbose_proxy_logger.debug(f"[Budget Check Model Resolution] Original: {model}, Resolved: {actual_model}")
 
         # Check if actual model starts with hosted_vllm/ OR is in FREE_MODELS list (case-insensitive)
         if isinstance(actual_model, str):
