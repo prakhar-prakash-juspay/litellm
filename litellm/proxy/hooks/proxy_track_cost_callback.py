@@ -84,6 +84,7 @@ class _ProxyDBLogger(CustomLogger):
             request_data.get("proxy_server_request") or {}
         )
         request_data["litellm_params"]["metadata"] = existing_metadata
+        from litellm.proxy.proxy_server import llm_router
         await proxy_logging_obj.db_spend_update_writer.update_database(
             token=user_api_key_dict.api_key,
             response_cost=0.0,
@@ -95,6 +96,7 @@ class _ProxyDBLogger(CustomLogger):
             start_time=datetime.now(),
             end_time=datetime.now(),
             org_id=user_api_key_dict.org_id,
+            llm_router=llm_router,
         )
 
     @log_db_metrics
@@ -149,8 +151,17 @@ class _ProxyDBLogger(CustomLogger):
                 # Get model from multiple sources (alias and actual model)
                 _request_model = kwargs.get("model")  # e.g., "xyne-spaces-minimax-m2" (alias)
                 _litellm_model = None
+                original_model = kwargs.get("litellm_params", {}).get("proxy_server_request", {}).get("body", {}).get("model")
+
                 if litellm_params and isinstance(litellm_params, dict):
                     _litellm_model = litellm_params.get("model")  # e.g., "MiniMaxAI/MiniMax-M2" (actual)
+
+                # Resolve actual model name using router to handle public aliases
+                from litellm.proxy.proxy_server import llm_router
+                from litellm.proxy.auth.auth_checks import get_deployment_litellm_model_name
+                _resolved_model = get_deployment_litellm_model_name(
+                    model=original_model, llm_router=llm_router
+                )
 
                 # Check if ANY of the model identifiers match (models with hosted_vllm/* prefix OR in FREE_MODELS env are free)
                 FREE_MODELS_ENV = os.getenv('FREE_MODELS', '')
@@ -159,7 +170,8 @@ class _ProxyDBLogger(CustomLogger):
 
                 is_free_model = False
                 matched_model = None
-                for model_name in [_request_model, _litellm_model]:
+                # Check models in order of reliability: resolved (most) -> litellm -> request (least)
+                for model_name in [_resolved_model, _litellm_model, _request_model]:
                     if model_name:
                         # Check if model starts with hosted_vllm/ OR is in FREE_MODELS list (case-insensitive)
                         if model_name.lower().startswith("hosted_vllm/"):
@@ -182,6 +194,7 @@ class _ProxyDBLogger(CustomLogger):
                     end_user_id=end_user_id,
                 ):
                     ## UPDATE DATABASE
+                    from litellm.proxy.proxy_server import llm_router
                     await proxy_logging_obj.db_spend_update_writer.update_database(
                         token=user_api_key,
                         response_cost=response_cost,
@@ -193,6 +206,7 @@ class _ProxyDBLogger(CustomLogger):
                         start_time=start_time,
                         end_time=end_time,
                         org_id=org_id,
+                        llm_router=llm_router,
                     )
 
                     # Update cache - use 0.0 cost for free models to prevent budget blocking

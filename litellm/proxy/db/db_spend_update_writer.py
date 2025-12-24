@@ -80,6 +80,7 @@ class DBSpendUpdateWriter:
         start_time: Optional[datetime],
         end_time: Optional[datetime],
         response_cost: Optional[float],
+        llm_router: Optional[Any] = None,  # Router instance for model resolution
     ):
         from litellm.proxy.proxy_server import (
             disable_spend_logs,
@@ -121,6 +122,7 @@ class DBSpendUpdateWriter:
             # Check both the payload model (actual provider model) and request model (alias)
             _payload_model = payload.get("model")  # e.g., "MiniMaxAI/MiniMax-M2"
             _request_model = kwargs.get("model")   # e.g., "xyne-spaces-minimax-m2"
+            original_model = kwargs.get("litellm_params", {}).get("proxy_server_request", {}).get("body", {}).get("model")
 
             # Also check litellm_params for the actual model
             _litellm_model = None
@@ -137,7 +139,14 @@ class DBSpendUpdateWriter:
             is_free_model = False
             _model_to_log = _payload_model or _request_model or _litellm_model
             matched_free_model = None
-            for model_name in [_payload_model, _request_model, _litellm_model]:
+
+            from litellm.proxy.auth.auth_checks import get_deployment_litellm_model_name
+            _resolved_model = get_deployment_litellm_model_name(
+                model=original_model, llm_router=llm_router)
+             
+            # Check models in order of reliability: litellm (most) -> resolved -> payload -> request (least)
+            for model_name in [_resolved_model, _litellm_model, _payload_model, _request_model]:
+
                 if model_name:
                     # Check if model starts with hosted_vllm/ OR is in FREE_MODELS list (case-insensitive)
                     if model_name.lower().startswith("hosted_vllm/"):

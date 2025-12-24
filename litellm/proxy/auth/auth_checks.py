@@ -194,20 +194,29 @@ async def common_checks(
         FREE_MODELS = [m.strip() for m in FREE_MODELS_ENV.split(',') if m.strip()]
         FREE_MODELS_LOWER = [m.lower() for m in FREE_MODELS] if FREE_MODELS else []
 
-        is_free_model = False
-        if isinstance(_model, str):
-            # FIX: Use .lower() before checking startswith
-            if _model.lower().startswith("hosted_vllm/"):
-                is_free_model = True
-            elif FREE_MODELS and _model.lower() in FREE_MODELS_LOWER:
-                is_free_model = True
+        # Get the actual litellm model name (with hosted_vllm/ prefix) for free model check
+        actual_model = get_deployment_litellm_model_name(model=_model, llm_router=llm_router)
 
-        elif isinstance(_model, list) and _model:
-            # FIX: Use .lower() here too
-            if _model[0].lower().startswith("hosted_vllm/"):
-                is_free_model = True
-            elif FREE_MODELS and _model[0].lower() in FREE_MODELS_LOWER:
-                is_free_model = True
+
+        is_free_model = False
+        if actual_model is not None:
+            if isinstance(actual_model, str):
+                # Check if actual model starts with hosted_vllm/ or is in FREE_MODELS list
+                if actual_model.lower().startswith("hosted_vllm/"):
+                    is_free_model = True
+     
+                elif FREE_MODELS and actual_model.lower() in FREE_MODELS_LOWER:
+                    is_free_model = True
+
+
+            elif isinstance(actual_model, list) and actual_model:
+                # Check if first model starts with hosted_vllm/ or is in FREE_MODELS list
+                if actual_model[0].lower().startswith("hosted_vllm/"):
+                    is_free_model = True
+
+                elif FREE_MODELS and actual_model[0].lower() in FREE_MODELS_LOWER:
+                    is_free_model = True
+ 
 
         if is_free_model:
             user_email = user_object.user_email if user_object.user_email else user_object.user_id
@@ -1680,6 +1689,49 @@ async def get_org_object(
         )
 
 
+def get_deployment_litellm_model_name(
+    model: Optional[Union[str, List[str]]], llm_router: Optional[Router]
+) -> Optional[Union[str, List[str]]]:
+    """
+    Get the litellm_params.model from the router deployment for the given public model name.
+
+    This is needed because the model name in the request is the public model_name,
+    but the actual model with the hosted_vllm/ prefix is stored in litellm_params.model
+    of the deployment.
+
+    Args:
+        model: The public model name from the request (can be None)
+        llm_router: The LiteLLM router instance
+
+    Returns:
+        The litellm_params.model from the deployment if found, otherwise the original model.
+        Returns None if model is None.
+    """
+    if model is None:
+        return None
+
+    if llm_router is None:
+        return model
+
+    if isinstance(model, list):
+        # Handle list of models
+        actual_models = []
+        for m in model:
+            deployments = llm_router.get_model_list(model_name=m)
+            if deployments and len(deployments) > 0:
+                # Get the first deployment's litellm_params.model
+                actual_models.append(deployments[0].get("litellm_params", {}).get("model", m))
+            else:
+                actual_models.append(m)
+        return actual_models
+    else:
+        # Handle single model
+        deployments = llm_router.get_model_list(model_name=model)
+        if deployments and len(deployments) > 0:
+            return deployments[0].get("litellm_params", {}).get("model", model)
+        return model
+
+
 def _check_model_access_helper(
     model: str,
     llm_router: Optional[Router],
@@ -1941,6 +1993,7 @@ async def _virtual_key_max_budget_check(
     proxy_logging_obj: ProxyLogging,
     user_obj: Optional[LiteLLM_UserTable] = None,
     model: Optional[str] = None,
+    llm_router: Optional[Router] = None,
 ):
     """
     Raises:
@@ -1949,6 +2002,7 @@ async def _virtual_key_max_budget_check(
 
     Args:
         model: The model being requested. If it's a free model, budget check is skipped.
+        llm_router: The LiteLLM router instance to resolve model aliases.
     """
     # Check if model is a free model (models with hosted_vllm/* prefix OR in FREE_MODELS env are free)
     import os
@@ -1958,11 +2012,24 @@ async def _virtual_key_max_budget_check(
 
     is_free_model = False
     if model:
-        # Check if model starts with hosted_vllm/ OR is in FREE_MODELS list (case-insensitive)
-        if model.lower().startswith("hosted_vllm/"):
-            is_free_model = True
-        elif FREE_MODELS and model.lower() in FREE_MODELS_LOWER:
-            is_free_model = True
+        # Get the actual litellm model name (with hosted_vllm/ prefix) for free model check
+        actual_model = get_deployment_litellm_model_name(model=model, llm_router=llm_router)
+
+        # Check if actual model starts with hosted_vllm/ OR is in FREE_MODELS list (case-insensitive)
+        if isinstance(actual_model, str):
+            if actual_model.lower().startswith("hosted_vllm/"):
+                is_free_model = True
+
+            elif FREE_MODELS and actual_model.lower() in FREE_MODELS_LOWER:
+                is_free_model = True
+ 
+        elif isinstance(actual_model, list) and actual_model:
+            if actual_model[0].lower().startswith("hosted_vllm/"):
+                is_free_model = True
+
+            elif FREE_MODELS and actual_model[0].lower() in FREE_MODELS_LOWER:
+                is_free_model = True
+
 
     if is_free_model:
         user_email = user_obj.user_email if user_obj and user_obj.user_email else (user_obj.user_id if user_obj else "unknown")
