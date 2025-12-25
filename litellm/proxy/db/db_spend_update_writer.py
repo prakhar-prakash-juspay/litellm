@@ -143,7 +143,7 @@ class DBSpendUpdateWriter:
             from litellm.proxy.auth.auth_checks import get_deployment_litellm_model_name
             _resolved_model = get_deployment_litellm_model_name(
                 model=original_model, llm_router=llm_router)
-            verbose_proxy_logger.debug(f"[DB Spend Update] Original: {original_model}, Resolved: {_resolved_model}")
+            verbose_proxy_logger.info(f"[DB Spend Update] Original: {original_model}, Resolved: {_resolved_model}")
 
             # Check models in order of reliability: litellm (most) -> resolved -> payload -> request (least)
             for model_name in [_resolved_model, _litellm_model, _payload_model, _request_model]:

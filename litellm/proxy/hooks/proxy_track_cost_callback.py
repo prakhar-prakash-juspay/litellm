@@ -162,7 +162,7 @@ class _ProxyDBLogger(CustomLogger):
                 _resolved_model = get_deployment_litellm_model_name(
                     model=original_model, llm_router=llm_router
                 )
-                verbose_proxy_logger.debug(f"[Proxy Track Cost] Original: {original_model}, Resolved: {_resolved_model}")
+                verbose_proxy_logger.info(f"[Proxy Track Cost] Original: {original_model}, Resolved: {_resolved_model}")
 
                 # Check if ANY of the model identifiers match (models with hosted_vllm/* prefix OR in FREE_MODELS env are free)
                 FREE_MODELS_ENV = os.getenv('FREE_MODELS', '')
