@@ -1727,6 +1727,7 @@ async def get_deployment_litellm_model_name(
         # Handle single model
         return await _resolve_single_model_from_db(model=model, prisma_client=prisma_client)
 
+_model_resolution_cache: Dict[str, str] = {}
 
 async def _resolve_single_model_from_db(
     model: str,
@@ -1734,7 +1735,13 @@ async def _resolve_single_model_from_db(
 ) -> str:
     """
     Resolve a single model name from database litellm_proxymodeltable.
+    Results are cached to avoid repeated DB calls.
     """
+    # Check cache first
+    if model in _model_resolution_cache:
+        verbose_proxy_logger.info(f"[DEBUG _resolve_single_model_from_db] cache hit for model={model}, resolved={_model_resolution_cache[model]}")
+        return _model_resolution_cache[model]
+
     try:
         from litellm.proxy.common_utils.encrypt_decrypt_utils import (
             decrypt_value_helper,
@@ -1744,6 +1751,7 @@ async def _resolve_single_model_from_db(
             where={"model_name": model}
         )
         verbose_proxy_logger.info(f"[DEBUG _resolve_single_model_from_db] db_model={db_model}")
+        resolved_model = model  # Default to original
         if db_model and hasattr(db_model, "litellm_params"):
             litellm_params = db_model.litellm_params
             verbose_proxy_logger.info(f"[DEBUG _resolve_single_model_from_db] model={model}, litellm_params={litellm_params}, type={type(litellm_params)}")
@@ -1759,15 +1767,16 @@ async def _resolve_single_model_from_db(
                         return_original_value=True
                     )
                     verbose_proxy_logger.info(f"[DEBUG _resolve_single_model_from_db] decrypted model={decrypted_model}")
-                    # Return decrypted model if decryption succeeded, otherwise return original
-                    return decrypted_model if decrypted_model else resolved
+                    # Use decrypted model if decryption succeeded, otherwise use original
+                    resolved_model = decrypted_model if decrypted_model else resolved
     except Exception as e:
         verbose_proxy_logger.info(f"[DEBUG _resolve_single_model_from_db] exception={e}")
         # Database query failed, continue with original model
-        pass
+        resolved_model = model
 
-    # Return original if not found in database
-    return model
+    # Cache the result before returning
+    _model_resolution_cache[model] = resolved_model
+    return resolved_model
 
 
 def _check_model_access_helper(
