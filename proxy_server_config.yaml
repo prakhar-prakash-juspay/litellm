@@ -49,6 +49,10 @@ model_list:
       model: openai/fake
       api_key: fake-key
       api_base: https://exampleopenaiendpoint-production.up.railway.app/
+  - model_name: hosted_vllm/MiniMaxAI/MiniMax-M2
+    litellm_params:
+      model: hosted_vllm/MiniMaxAI/MiniMax-M2
+      api_base: http://115.112.206.62:8000/v1
   - model_name: fake-openai-endpoint-2
     litellm_params:
       model: openai/my-fake-model
@@ -138,6 +142,9 @@ model_list:
       model: gpt-4o
       api_key: os.environ/OPENAI_API_KEY
 
+    model_aliases:
+      claude-3-5-haiku-20241022: hosted_vllm/MiniMaxAI/MiniMax-M2
+      claude-3-5-haiku@20241022: hosted_vllm/MiniMaxAI/MiniMax-M2
 
 litellm_settings:
   # set_verbose: True  # Uncomment this if you want to see verbose logs; not recommended in production
