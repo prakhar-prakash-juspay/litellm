@@ -80,7 +80,7 @@ class DBSpendUpdateWriter:
         start_time: Optional[datetime],
         end_time: Optional[datetime],
         response_cost: Optional[float],
-        llm_router: Optional[Any] = None,  # Router instance for model resolution
+        prisma_client: Optional[Any] = None,  # Prisma client for database lookup
     ):
         from litellm.proxy.proxy_server import (
             disable_spend_logs,
@@ -141,8 +141,8 @@ class DBSpendUpdateWriter:
             matched_free_model = None
 
             from litellm.proxy.auth.auth_checks import get_deployment_litellm_model_name
-            _resolved_model = get_deployment_litellm_model_name(
-                model=original_model, llm_router=llm_router)
+            _resolved_model = await get_deployment_litellm_model_name(
+                model=original_model, prisma_client=prisma_client)
             verbose_proxy_logger.info(f"[DB Spend Update] Original: {original_model}, Resolved: {_resolved_model}")
 
             # Check models in order of reliability: litellm (most) -> resolved -> payload -> request (least)
