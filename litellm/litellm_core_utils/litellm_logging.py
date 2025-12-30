@@ -137,6 +137,7 @@ from ..integrations.gcs_pubsub.pub_sub import GcsPubSubLogger
 from ..integrations.greenscale import GreenscaleLogger
 from ..integrations.helicone import HeliconeLogger
 from ..integrations.humanloop import HumanloopLogger
+from ..integrations.kibana_logger import KibanaLogger
 from ..integrations.lago import LagoLogger
 from ..integrations.langfuse.langfuse import LangFuseLogger
 from ..integrations.langfuse.langfuse_handler import LangFuseHandler
@@ -3422,6 +3423,14 @@ def _init_custom_logger_compatible_class(  # noqa: PLR0915
             _posthog_logger = PostHogLogger()
             _in_memory_loggers.append(_posthog_logger)
             return _posthog_logger  # type: ignore
+        elif logging_integration == "kibana":
+            for callback in _in_memory_loggers:
+                if isinstance(callback, KibanaLogger):
+                    return callback  # type: ignore
+
+            _kibana_logger = KibanaLogger()
+            _in_memory_loggers.append(_kibana_logger)
+            return _kibana_logger  # type: ignore
         elif logging_integration == "braintrust":
             from litellm.integrations.braintrust_logging import BraintrustLogger
 
