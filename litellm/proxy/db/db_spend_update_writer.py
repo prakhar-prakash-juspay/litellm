@@ -80,6 +80,7 @@ class DBSpendUpdateWriter:
         start_time: Optional[datetime],
         end_time: Optional[datetime],
         response_cost: Optional[float],
+        prisma_client: Optional[Any] = None,  # Prisma client for database lookup
     ):
         from litellm.proxy.proxy_server import (
             disable_spend_logs,
@@ -121,6 +122,7 @@ class DBSpendUpdateWriter:
             # Check both the payload model (actual provider model) and request model (alias)
             _payload_model = payload.get("model")  # e.g., "MiniMaxAI/MiniMax-M2"
             _request_model = kwargs.get("model")   # e.g., "xyne-spaces-minimax-m2"
+            original_model = kwargs.get("litellm_params", {}).get("proxy_server_request", {}).get("body", {}).get("model")
 
             # Also check litellm_params for the actual model
             _litellm_model = None
@@ -128,17 +130,31 @@ class DBSpendUpdateWriter:
             if litellm_params and isinstance(litellm_params, dict):
                 _litellm_model = litellm_params.get("model")
 
+            # Check if ANY of the model identifiers match (models with hosted_vllm/* prefix OR in FREE_MODELS env are free)
+            import os
             FREE_MODELS_ENV = os.getenv('FREE_MODELS', '')
             FREE_MODELS = [m.strip() for m in FREE_MODELS_ENV.split(',') if m.strip()]
+            FREE_MODELS_LOWER = [m.lower() for m in FREE_MODELS] if FREE_MODELS else []
 
-            # Check if ANY of the model identifiers match (case-insensitive)
             is_free_model = False
             _model_to_log = _payload_model or _request_model or _litellm_model
             matched_free_model = None
-            if FREE_MODELS:
-                FREE_MODELS_LOWER = [m.lower() for m in FREE_MODELS]
-                for model_name in [_payload_model, _request_model, _litellm_model]:
-                    if model_name and model_name.lower() in FREE_MODELS_LOWER:
+
+            from litellm.proxy.auth.auth_checks import get_deployment_litellm_model_name
+            _resolved_model = await get_deployment_litellm_model_name(
+                model=original_model, prisma_client=prisma_client)
+            verbose_proxy_logger.info(f"[DB Spend Update] Original: {original_model}, Resolved: {_resolved_model}")
+
+            # Check models in order of reliability: litellm (most) -> resolved -> payload -> request (least)
+            for model_name in [_resolved_model, _litellm_model, _payload_model, _request_model]:
+
+                if model_name:
+                    # Check if model starts with hosted_vllm/ OR is in FREE_MODELS list (case-insensitive)
+                    if model_name.lower().startswith("hosted_vllm/"):
+                        is_free_model = True
+                        matched_free_model = model_name
+                        break
+                    elif FREE_MODELS and model_name.lower() in FREE_MODELS_LOWER:
                         is_free_model = True
                         matched_free_model = model_name
                         break

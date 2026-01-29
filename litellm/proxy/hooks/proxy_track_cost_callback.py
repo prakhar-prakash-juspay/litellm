@@ -84,6 +84,7 @@ class _ProxyDBLogger(CustomLogger):
             request_data.get("proxy_server_request") or {}
         )
         request_data["litellm_params"]["metadata"] = existing_metadata
+        from litellm.proxy.proxy_server import prisma_client
         await proxy_logging_obj.db_spend_update_writer.update_database(
             token=user_api_key_dict.api_key,
             response_cost=0.0,
@@ -95,6 +96,7 @@ class _ProxyDBLogger(CustomLogger):
             start_time=datetime.now(),
             end_time=datetime.now(),
             org_id=user_api_key_dict.org_id,
+            prisma_client=prisma_client,
         )
 
     @log_db_metrics
@@ -149,19 +151,35 @@ class _ProxyDBLogger(CustomLogger):
                 # Get model from multiple sources (alias and actual model)
                 _request_model = kwargs.get("model")  # e.g., "xyne-spaces-minimax-m2" (alias)
                 _litellm_model = None
+                original_model = kwargs.get("litellm_params", {}).get("proxy_server_request", {}).get("body", {}).get("model")
+
                 if litellm_params and isinstance(litellm_params, dict):
                     _litellm_model = litellm_params.get("model")  # e.g., "MiniMaxAI/MiniMax-M2" (actual)
 
+                # Resolve actual model name using database to handle public aliases
+                from litellm.proxy.proxy_server import prisma_client
+                from litellm.proxy.auth.auth_checks import get_deployment_litellm_model_name
+                _resolved_model = await get_deployment_litellm_model_name(
+                    model=original_model, prisma_client=prisma_client
+                )
+                verbose_proxy_logger.info(f"[Proxy Track Cost] Original: {original_model}, Resolved: {_resolved_model}")
+
+                # Check if ANY of the model identifiers match (models with hosted_vllm/* prefix OR in FREE_MODELS env are free)
                 FREE_MODELS_ENV = os.getenv('FREE_MODELS', '')
                 FREE_MODELS = [m.strip() for m in FREE_MODELS_ENV.split(',') if m.strip()]
+                FREE_MODELS_LOWER = [m.lower() for m in FREE_MODELS] if FREE_MODELS else []
 
-                # Check if ANY of the model identifiers match (case-insensitive)
                 is_free_model = False
                 matched_model = None
-                if FREE_MODELS:
-                    FREE_MODELS_LOWER = [m.lower() for m in FREE_MODELS]
-                    for model_name in [_request_model, _litellm_model]:
-                        if model_name and model_name.lower() in FREE_MODELS_LOWER:
+                # Check models in order of reliability: resolved (most) -> litellm -> request (least)
+                for model_name in [_resolved_model, _litellm_model, _request_model]:
+                    if model_name:
+                        # Check if model starts with hosted_vllm/ OR is in FREE_MODELS list (case-insensitive)
+                        if model_name.lower().startswith("hosted_vllm/"):
+                            is_free_model = True
+                            matched_model = model_name
+                            break
+                        elif FREE_MODELS and model_name.lower() in FREE_MODELS_LOWER:
                             is_free_model = True
                             matched_model = model_name
                             break
@@ -177,6 +195,7 @@ class _ProxyDBLogger(CustomLogger):
                     end_user_id=end_user_id,
                 ):
                     ## UPDATE DATABASE
+                    from litellm.proxy.proxy_server import prisma_client
                     await proxy_logging_obj.db_spend_update_writer.update_database(
                         token=user_api_key,
                         response_cost=response_cost,
@@ -188,9 +207,10 @@ class _ProxyDBLogger(CustomLogger):
                         start_time=start_time,
                         end_time=end_time,
                         org_id=org_id,
+                        prisma_client=prisma_client,
                     )
 
-                    # Update cache - use 0.0 cost for FREE_MODELS to prevent budget blocking
+                    # Update cache - use 0.0 cost for free models to prevent budget blocking
                     if is_free_model:
                         # Free model: set cost to 0.0 for cache (budget checks won't block)
                         asyncio.create_task(

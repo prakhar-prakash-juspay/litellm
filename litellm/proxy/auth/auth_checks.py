@@ -187,13 +187,38 @@ async def common_checks(
         print(f"[METADATA_ENDPOINT] Budget check SKIPPED - Route: {route}, User: {user_object.user_id if user_object else 'unknown'}")
 
     if user_object is not None and user_object.max_budget is not None and should_check_budget:
-        # Check if model is in free models list (bypass budget check for internal models)
+        # Check if model is a free model (models with hosted_vllm/* prefix OR in FREE_MODELS env are free)
+        # Skip budget check for free models
         import os
         FREE_MODELS_ENV = os.getenv('FREE_MODELS', '')
         FREE_MODELS = [m.strip() for m in FREE_MODELS_ENV.split(',') if m.strip()]
+        FREE_MODELS_LOWER = [m.lower() for m in FREE_MODELS] if FREE_MODELS else []
 
-        # Skip budget check for free models
-        if _model and FREE_MODELS and _model in FREE_MODELS:
+        # Get the actual litellm model name (with hosted_vllm/ prefix) for free model check
+        actual_model = await get_deployment_litellm_model_name(model=_model, prisma_client=prisma_client)
+        verbose_proxy_logger.info(f"[Model Resolution] Original: {_model}, Resolved: {actual_model}")
+
+        is_free_model = False
+        if actual_model is not None:
+            if isinstance(actual_model, str):
+                # Check if actual model starts with hosted_vllm/ or is in FREE_MODELS list
+                if actual_model.lower().startswith("hosted_vllm/"):
+                    is_free_model = True
+     
+                elif FREE_MODELS and actual_model.lower() in FREE_MODELS_LOWER:
+                    is_free_model = True
+
+
+            elif isinstance(actual_model, list) and actual_model:
+                # Check if first model starts with hosted_vllm/ or is in FREE_MODELS list
+                if actual_model[0].lower().startswith("hosted_vllm/"):
+                    is_free_model = True
+
+                elif FREE_MODELS and actual_model[0].lower() in FREE_MODELS_LOWER:
+                    is_free_model = True
+ 
+
+        if is_free_model:
             user_email = user_object.user_email if user_object.user_email else user_object.user_id
             # print(f"[FREE_MODELS] Budget check BYPASSED - Route: {route}, User: {user_email}, Model: {_model}, UserSpend: ${user_object.spend:.4f}, Budget: ${user_object.max_budget:.4f}")
             verbose_proxy_logger.info(f"Free model usage - User: {user_email}, Model: {_model}")
@@ -226,7 +251,7 @@ async def common_checks(
                 error_message = (
                     f"You have exceeded your {period_text} limit for external paid models. "
                     f"Current spend: ${user_object.spend:.2f}, Limit: ${user_budget:.2f}. "
-                    f"You can continue using free internal models: {free_models_list}. "
+                    f"You can continue using free internal models: {free_models_list} or models with 'hosted_vllm/' prefix. "
                     f"Contact your administrator to increase your budget."
                 )
 
@@ -1664,6 +1689,96 @@ async def get_org_object(
         )
 
 
+async def get_deployment_litellm_model_name(
+    model: Optional[Union[str, List[str]]],
+    llm_router: Optional[Router] = None,
+    prisma_client: Optional[Any] = None,
+) -> Optional[Union[str, List[str]]]:
+    """
+    Get the litellm_params.model from database for the given public model name.
+
+    This is needed because the model name in the request is the public model_name,
+    but the actual model with the hosted_vllm/ prefix is stored in litellm_params.model
+    of the deployment in the database.
+
+    Args:
+        model: The public model name from the request (can be None)
+        llm_router: The LiteLLM router instance (deprecated, not used)
+        prisma_client: The Prisma client for database lookup
+
+    Returns:
+        The litellm_params.model from the database if found, otherwise the original model.
+        Returns None if model is None.
+    """
+    if model is None:
+        return None
+
+    if prisma_client is None:
+        return model
+
+    if isinstance(model, list):
+        # Handle list of models
+        actual_models = []
+        for m in model:
+            resolved = await _resolve_single_model_from_db(model=m, prisma_client=prisma_client)
+            actual_models.append(resolved)
+        return actual_models
+    else:
+        # Handle single model
+        return await _resolve_single_model_from_db(model=model, prisma_client=prisma_client)
+
+_model_resolution_cache: Dict[str, str] = {}
+
+async def _resolve_single_model_from_db(
+    model: str,
+    prisma_client: Any,
+) -> str:
+    """
+    Resolve a single model name from database litellm_proxymodeltable.
+    Results are cached to avoid repeated DB calls.
+    """
+    # Check cache first
+    if model in _model_resolution_cache:
+        verbose_proxy_logger.info(f"[DEBUG _resolve_single_model_from_db] cache hit for model={model}, resolved={_model_resolution_cache[model]}")
+        return _model_resolution_cache[model]
+
+    try:
+        from litellm.proxy.common_utils.encrypt_decrypt_utils import (
+            decrypt_value_helper,
+        )
+
+        db_model = await prisma_client.db.litellm_proxymodeltable.find_first(
+            where={"model_name": model}
+        )
+        verbose_proxy_logger.info(f"[DEBUG _resolve_single_model_from_db] db_model={db_model}")
+        resolved_model = model  # Default to original
+        if db_model and hasattr(db_model, "litellm_params"):
+            litellm_params = db_model.litellm_params
+            verbose_proxy_logger.info(f"[DEBUG _resolve_single_model_from_db] model={model}, litellm_params={litellm_params}, type={type(litellm_params)}")
+            if isinstance(litellm_params, dict):
+                resolved = litellm_params.get("model")
+                if resolved:
+                    verbose_proxy_logger.info(f"[DEBUG _resolve_single_model_from_db] resolved from dict (encrypted)={resolved}")
+                    # Decrypt the model value
+                    decrypted_model = decrypt_value_helper(
+                        value=resolved,
+                        key="model",
+                        exception_type="debug",
+                        return_original_value=True
+                    )
+                    verbose_proxy_logger.info(f"[DEBUG _resolve_single_model_from_db] decrypted model={decrypted_model}")
+                    # Use decrypted model if decryption succeeded, otherwise use original
+                    resolved_model = decrypted_model if decrypted_model else resolved
+    except Exception as e:
+        verbose_proxy_logger.info(f"[DEBUG _resolve_single_model_from_db] exception={e}")
+        # Database query failed, continue with original model
+        resolved_model = model
+
+    # Cache the result before returning
+    _model_resolution_cache[model] = resolved_model
+    return resolved_model
+
+
 def _check_model_access_helper(
     model: str,
     llm_router: Optional[Router],
@@ -1925,6 +2040,7 @@ async def _virtual_key_max_budget_check(
     proxy_logging_obj: ProxyLogging,
     user_obj: Optional[LiteLLM_UserTable] = None,
     model: Optional[str] = None,
+    prisma_client: Optional[Any] = None,
 ):
     """
     Raises:
@@ -1933,15 +2049,40 @@ async def _virtual_key_max_budget_check(
 
     Args:
         model: The model being requested. If it's a free model, budget check is skipped.
+        prisma_client: The Prisma client for database lookup.
     """
-    # Check if model is in free models list (bypass budget check for internal models)
+    # Check if model is a free model (models with hosted_vllm/* prefix OR in FREE_MODELS env are free)
     import os
     FREE_MODELS_ENV = os.getenv('FREE_MODELS', '')
     FREE_MODELS = [m.strip() for m in FREE_MODELS_ENV.split(',') if m.strip()]
+    FREE_MODELS_LOWER = [m.lower() for m in FREE_MODELS] if FREE_MODELS else []
 
-    if model and FREE_MODELS and model in FREE_MODELS:
+    is_free_model = False
+    if model:
+        # Get the actual litellm model name (with hosted_vllm/ prefix) for free model check
+        actual_model = await get_deployment_litellm_model_name(model=model, prisma_client=prisma_client)
+        verbose_proxy_logger.info(f"[Budget Check Model Resolution] Original: {model}, Resolved: {actual_model}")
+
+        # Check if actual model starts with hosted_vllm/ OR is in FREE_MODELS list (case-insensitive)
+        if isinstance(actual_model, str):
+            if actual_model.lower().startswith("hosted_vllm/"):
+                is_free_model = True
+
+            elif FREE_MODELS and actual_model.lower() in FREE_MODELS_LOWER:
+                is_free_model = True
+ 
+        elif isinstance(actual_model, list) and actual_model:
+            if actual_model[0].lower().startswith("hosted_vllm/"):
+                is_free_model = True
+
+            elif FREE_MODELS and actual_model[0].lower() in FREE_MODELS_LOWER:
+                is_free_model = True
+
+
+    if is_free_model:
         user_email = user_obj.user_email if user_obj and user_obj.user_email else (user_obj.user_id if user_obj else "unknown")
-        verbose_proxy_logger.info(f"Free model usage - User: {user_email}, Model: {model}, Key: {valid_token.token[:10]}...")
+        key_preview = valid_token.token[:10] + "..." if valid_token and valid_token.token else "unknown"
+        verbose_proxy_logger.info(f"Free model usage - User: {user_email}, Model: {model}, Key: {key_preview}")
         return  # Skip budget check for free models
 
     if valid_token.spend is not None and valid_token.max_budget is not None:
