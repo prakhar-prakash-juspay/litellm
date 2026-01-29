@@ -4694,9 +4694,16 @@ async def model_list(
     # Build response data
     model_data = []
     for model in all_models:
+        # Get deployment to dynamically determine the provider
+        provider = "openai"  # Default fallback
+        if llm_router is not None:
+            deployment = llm_router.get_deployment_by_model_group_name(model)
+            if deployment is not None:
+                _, provider, _, _ = litellm.get_llm_provider(model=deployment.litellm_params.model)
+
         model_info = create_model_info_response(
             model_id=model,
-            provider="openai",
+            provider=provider,
             include_metadata=include_metadata or False,
             fallback_type=fallback_type,
             llm_router=llm_router,
